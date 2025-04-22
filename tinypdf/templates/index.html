@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Compressor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 50px;
+            text-align: center;
+        }
+        form {
+            margin-top: 20px;
+        }
+        input, select, button {
+            margin: 10px;
+            padding: 10px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <h1>PDF Compressor</h1>
+    <p>Upload a PDF file, select the compression quality, and download the compressed file.</p>
+    <form action="/" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" accept=".pdf" required>
+        <br>
+        <label for="quality">Compression Quality:</label>
+        <select name="quality" id="quality">
+            <option value="screen">Screen (Low)</option>
+            <option value="ebook">eBook (Medium)</option>
+            <option value="printer">Printer (High)</option>
+            <option value="prepress">Prepress (Very High)</option>
+        </select>
+        <br>
+        <button type="submit">Compress PDF</button>
+    </form>
+</body>
+</html>
