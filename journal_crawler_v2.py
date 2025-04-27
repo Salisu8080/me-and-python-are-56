@@ -1,5 +1,5 @@
 """
-pip install requests beautifulsoup4 tqdm
+pip install requests beautifulsoup4 tqdm pdfplumber re
 python journal_crawler.py
 """
 
@@ -13,6 +13,7 @@ from tqdm import tqdm
 import concurrent.futures
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
+import pdfplumber  # For PDF parsing
 
 
 def sanitize_filename(filename):
@@ -94,6 +95,103 @@ def create_session():
     
     session.headers.update(headers)
     return session
+
+
+def extract_text_from_pdf(pdf_path):
+    """Extract all text from a PDF file."""
+    try:
+        text = ""
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text() or ""
+                text += page_text + "\n"
+        return text
+    except Exception as e:
+        print(f"Error extracting text from PDF {pdf_path}: {str(e)}")
+        return ""
+
+
+def extract_emails_from_text(text):
+    """Extract email addresses from text using regex."""
+    # Pattern for email addresses
+    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    emails = re.findall(email_pattern, text)
+    
+    # Remove duplicates while preserving order
+    unique_emails = []
+    for email in emails:
+        if email.lower() not in [e.lower() for e in unique_emails]:
+            unique_emails.append(email)
+    
+    return unique_emails
+
+
+def extract_keywords_from_text(text):
+    """Extract keywords from academic paper text."""
+    # Convert to lowercase for case-insensitive matching
+    text_lower = text.lower()
+    
+    # Common patterns that precede keywords
+    keyword_patterns = [
+        r'keywords?\s*:(.+?)(?:\n\n|\n[A-Z]|\nabstract|\nintroduction)',
+        r'key\s+words?\s*:(.+?)(?:\n\n|\n[A-Z]|\nabstract|\nintroduction)',
+        r'indexing terms\s*:(.+?)(?:\n\n|\n[A-Z]|\nabstract|\nintroduction)'
+    ]
+    
+    # Try each pattern
+    for pattern in keyword_patterns:
+        matches = re.search(pattern, text_lower, re.DOTALL | re.IGNORECASE)
+        if matches:
+            keywords_text = matches.group(1).strip()
+            
+            # Clean up the keywords
+            # Keywords are typically separated by commas, semicolons, or line breaks
+            keywords = re.split(r'[,;]\s*|\n', keywords_text)
+            
+            # Clean each keyword and filter out empty ones
+            cleaned_keywords = [kw.strip() for kw in keywords if kw.strip()]
+            
+            return cleaned_keywords
+    
+    # If no matches found with the patterns, try to find any line containing "keywords:"
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if re.search(r'keywords?\s*:', line.lower()):
+            # If found, the keywords are likely on this line or the next
+            if ':' in line:
+                keywords_text = line.split(':', 1)[1].strip()
+                if keywords_text:
+                    keywords = re.split(r'[,;]\s*', keywords_text)
+                    return [kw.strip() for kw in keywords if kw.strip()]
+            
+            # Check the next line if this line doesn't contain the keywords
+            if i + 1 < len(lines) and lines[i + 1].strip():
+                keywords = re.split(r'[,;]\s*', lines[i + 1].strip())
+                return [kw.strip() for kw in keywords if kw.strip()]
+    
+    return []
+
+
+def process_pdf_for_metadata(pdf_path):
+    """Extract metadata from PDF file."""
+    try:
+        # Extract text from PDF
+        text = extract_text_from_pdf(pdf_path)
+        
+        # Extract emails and keywords
+        emails = extract_emails_from_text(text)
+        keywords = extract_keywords_from_text(text)
+        
+        return {
+            "email": ", ".join(emails) if emails else "",
+            "keywords": ", ".join(keywords) if keywords else ""
+        }
+    except Exception as e:
+        print(f"Error processing PDF metadata for {pdf_path}: {str(e)}")
+        return {
+            "email": "",
+            "keywords": ""
+        }
 
 
 def main():
@@ -250,14 +348,9 @@ def main():
             "authors": authors,
             "abstract": abstract_text,
             "file_path": file_path,          # Renamed from "filename"
-            "keywords": "",                  # New empty field
-            "email": ""                      # New empty field
+            "keywords": "",                  # Will be populated after PDF processing
+            "email": ""                      # Will be populated after PDF processing
         }
-        
-        # These fields are intentionally excluded as requested:
-        # - "article_type"
-        # - "abstract_id"
-        # - "download_link"
         
         # Add to metadata
         metadata.append(article_data)
@@ -275,11 +368,12 @@ def main():
                     download_link = path_url + '/' + download_link
             
             save_path = file_path
-            download_tasks.append((article_data, save_path, download_link))
+            download_tasks.append((article_data, save_path, download_link, i))
         else:
             print(f"Warning: No download link found for article: {topic}")
     
     # Use ThreadPoolExecutor for parallel downloads
+    successful_downloads = []
     if download_tasks:
         print(f"\nDownloading {len(download_tasks)} PDFs in parallel (max {max_workers} concurrent downloads)...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -290,25 +384,43 @@ def main():
                     download_link, 
                     save_path, 
                     session
-                ): (article_data, i) 
-                for i, (article_data, save_path, download_link) in enumerate(download_tasks)
+                ): (article_data, i, idx) 
+                for i, (article_data, save_path, download_link, idx) in enumerate(download_tasks)
             }
             
             # Process results as they complete
             for future in tqdm(concurrent.futures.as_completed(future_to_article), 
                               total=len(future_to_article),
                               desc="Downloading articles"):
-                article_data, i = future_to_article[future]
+                article_data, i, idx = future_to_article[future]
                 try:
                     result = future.result()
                     if result['success']:
                         print(f"Downloaded: {article_data['title']}")
+                        successful_downloads.append((article_data, result['path'], idx))
                     else:
                         print(f"Error downloading {article_data['title']}: {result['error']}")
                 except Exception as e:
                     print(f"Error processing {article_data['title']}: {str(e)}")
     else:
         print("No articles with download links found.")
+    
+    # Process downloaded PDFs to extract email and keywords
+    if successful_downloads:
+        print("\nExtracting metadata from downloaded PDFs...")
+        for article_data, pdf_path, idx in tqdm(successful_downloads, desc="Processing PDFs"):
+            try:
+                print(f"Extracting metadata from: {os.path.basename(pdf_path)}")
+                pdf_metadata = process_pdf_for_metadata(pdf_path)
+                
+                # Update metadata with information from PDF
+                metadata[idx]["email"] = pdf_metadata["email"]
+                metadata[idx]["keywords"] = pdf_metadata["keywords"]
+                
+                print(f"  Keywords: {pdf_metadata['keywords'][:100]}...")
+                print(f"  Email: {pdf_metadata['email']}")
+            except Exception as e:
+                print(f"Error processing PDF {pdf_path}: {str(e)}")
     
     # Save metadata to JSON file
     json_path = os.path.join(volume_dir, "metadata.json")
