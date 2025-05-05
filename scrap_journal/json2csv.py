@@ -7,7 +7,7 @@ with columns arranged in a specific order. The script handles proper CSV formatt
 including escaping quotes and commas within fields.
 
 Usage:
-    python json_to_csv_converter.py input.json output.csv
+    python json2csv.py metadata.json metadata.csv
 
 Author: Engr. Salisu Zubairu Gaya
 Date: April 25, 2025
